@@ -590,7 +590,7 @@ def _get_campaigns_needing_analysis(conn) -> List[Dict]:
                    vertical, country, run_dates, rfp_summary, targeting,
                    any_other_details, products_to_pitch, monday_submitted_at
             FROM campaigns
-            WHERE derived_language IS NULL
+            WHERE derived_language IS NULL OR BTRIM(derived_language) = ''
         """)
         return [dict(r) for r in cur.fetchall()]
 
@@ -603,7 +603,8 @@ def _get_campaigns_needing_inventory(conn) -> List[Dict]:
                    any_other_details, products_to_pitch, monday_submitted_at,
                    derived_language, recommended_category, error_log
             FROM campaigns
-            WHERE derived_language IS NOT NULL AND inventory_status IS NULL
+            WHERE derived_language IS NOT NULL AND BTRIM(derived_language) <> ''
+              AND (inventory_status IS NULL OR BTRIM(inventory_status) = '')
         """)
         return [dict(r) for r in cur.fetchall()]
 
