@@ -172,6 +172,18 @@ def fetch_access_blocked(conn) -> pd.DataFrame:
     """).fillna("")
 
 
+def fetch_analysis_errors(conn) -> pd.DataFrame:
+    return _df(conn, """
+        SELECT region, campaign_name, brand_name, country,
+               derived_language, recommended_category, recommendation_basis,
+               error_log, monday_url, inserted_at_utc, updated_at_utc
+        FROM campaigns
+        WHERE error_log IS NOT NULL AND BTRIM(error_log) <> ''
+        ORDER BY updated_at_utc DESC NULLS LAST, inserted_at_utc DESC
+        LIMIT 200
+    """).fillna("")
+
+
 # ---------------------------------------------------------------------------
 # Pipeline runner
 # ---------------------------------------------------------------------------
@@ -241,8 +253,18 @@ def main() -> None:
 
     if "resolve_alert_id"  not in st.session_state: st.session_state["resolve_alert_id"]  = None
     if "resolve_blocked_id" not in st.session_state: st.session_state["resolve_blocked_id"] = None
+    st.session_state.setdefault("last_run_output", "")
+    st.session_state.setdefault("last_run_error", "")
 
     config_path, inventory_path, run_clicked = _sidebar(conn)
+
+    # Persistent logs (from last run in this session)
+    if st.session_state.get("last_run_output") or st.session_state.get("last_run_error"):
+        with st.expander("📄 Run logs (last run)", expanded=False):
+            if st.session_state.get("last_run_error"):
+                st.text_area("Last run error", st.session_state["last_run_error"], height=180)
+            if st.session_state.get("last_run_output"):
+                st.text_area("Last run output", st.session_state["last_run_output"], height=320)
 
     if run_clicked:
         since = _last_run_date(conn) or FIRST_RUN_SINCE
@@ -253,19 +275,23 @@ def main() -> None:
                 "This takes a few minutes."
             ):
                 output = run_pipeline(Path(config_path), Path(inventory_path), since)
+            st.session_state["last_run_output"] = output or ""
+            st.session_state["last_run_error"] = ""
             st.success("Pipeline completed successfully.")
-            with st.expander("Pipeline output"):
-                st.text(output)
         except Exception as e:
-            st.error(str(e))
+            msg = str(e)
+            st.session_state["last_run_error"] = msg
+            st.session_state["last_run_output"] = ""
+            st.error(msg)
         finally:
             conn = get_dashboard_conn()
         st.rerun()
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab_alerts, tab_resolved, tab_30d, tab_old, tab_blocked = st.tabs([
+    tab_alerts, tab_resolved, tab_30d, tab_old, tab_errors, tab_blocked = st.tabs([
         "Open Alerts", "Resolved Alerts",
         "All Results (Last 30 days)", "Older Campaigns",
+        "Errors",
         "Access Blocked",
     ])
 
@@ -405,6 +431,19 @@ def main() -> None:
                 "context_status":        st.column_config.TextColumn("Context Status"),
             }
             st.dataframe(df_old, use_container_width=True, height=600, column_config=old_cfg)
+
+    # ── Errors ────────────────────────────────────────────────────────────
+    with tab_errors:
+        df_e = fetch_analysis_errors(conn)
+        st.write(f"Campaigns with errors: **{len(df_e)}**")
+        if df_e.empty:
+            st.info("No analysis errors found.")
+        else:
+            col_cfge = {
+                "monday_url": st.column_config.LinkColumn("Monday Link", display_text="Open"),
+                "error_log":  st.column_config.TextColumn("Error", width="large"),
+            }
+            st.dataframe(df_e, use_container_width=True, height=600, column_config=col_cfge)
 
     # ── Access Blocked ────────────────────────────────────────────────────
     with tab_blocked:
