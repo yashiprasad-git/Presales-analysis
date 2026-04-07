@@ -184,6 +184,23 @@ def fetch_analysis_errors(conn) -> pd.DataFrame:
         LIMIT 200
     """).fillna("")
 
+def fetch_pending_counts(conn) -> Dict[str, int]:
+    df = _df(conn, """
+        SELECT
+          SUM(CASE WHEN derived_language IS NULL OR BTRIM(derived_language) = '' THEN 1 ELSE 0 END) AS pending_analysis,
+          SUM(CASE WHEN (derived_language IS NOT NULL AND BTRIM(derived_language) <> '')
+                     AND (inventory_status IS NULL OR BTRIM(inventory_status) = '')
+                   THEN 1 ELSE 0 END) AS pending_inventory
+        FROM campaigns
+    """).fillna(0)
+    if df.empty:
+        return {"pending_analysis": 0, "pending_inventory": 0}
+    row = df.iloc[0].to_dict()
+    return {
+        "pending_analysis": int(row.get("pending_analysis", 0) or 0),
+        "pending_inventory": int(row.get("pending_inventory", 0) or 0),
+    }
+
 
 # ---------------------------------------------------------------------------
 # Pipeline runner
@@ -269,6 +286,12 @@ def main() -> None:
 
     config_path, inventory_path, inv_upload, run_clicked = _sidebar(conn)
 
+    pending = fetch_pending_counts(conn)
+    st.caption(
+        f"Pending: **{pending['pending_analysis']}** to analyse | "
+        f"**{pending['pending_inventory']}** to inventory-check"
+    )
+
     # Persistent logs (from last run in this session)
     if st.session_state.get("last_run_output") or st.session_state.get("last_run_error"):
         with st.expander("📄 Run logs (last run)", expanded=False):
@@ -281,6 +304,13 @@ def main() -> None:
         since = _last_run_date(conn) or FIRST_RUN_SINCE
         conn.close()   # close before long subprocess
         try:
+            if pending["pending_analysis"] == 0 and pending["pending_inventory"] == 0:
+                st.info("Nothing pending. All campaigns already analysed and inventory-checked.")
+                st.session_state["last_run_error"] = ""
+                st.session_state["last_run_output"] = ""
+                conn = get_dashboard_conn()
+                st.rerun()
+
             inv_path_to_use = inventory_path
             if not inv_path_to_use:
                 if inv_upload is None:
