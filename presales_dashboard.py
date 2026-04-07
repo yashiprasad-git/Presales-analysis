@@ -4,6 +4,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import tempfile
 
 import pandas as pd
 import streamlit as st
@@ -223,7 +224,17 @@ def _sidebar(conn) -> tuple:
     with st.sidebar:
         st.header("Configuration")
 
-        inventory_path = st.text_input("Inventory file", value="inventory.xlsx")
+        st.caption("Inventory file")
+        inv_upload = st.file_uploader(
+            "Upload inventory (.xlsx or .csv)",
+            type=["xlsx", "csv"],
+            help="Required for analysis. This file is used only during the run and is not stored in GitHub.",
+        )
+        inventory_path = st.text_input(
+            "…or use a path (advanced)",
+            value="",
+            help="Optional. If left empty, you must upload the inventory file above.",
+        ).strip()
 
         st.divider()
         st.caption("API Keys")
@@ -235,7 +246,7 @@ def _sidebar(conn) -> tuple:
         st.divider()
         run_clicked = st.button("▶ Run Analysis", type="primary", use_container_width=True)
 
-    return "monday_config.json", inventory_path, run_clicked
+    return "monday_config.json", inventory_path, inv_upload, run_clicked
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +267,7 @@ def main() -> None:
     st.session_state.setdefault("last_run_output", "")
     st.session_state.setdefault("last_run_error", "")
 
-    config_path, inventory_path, run_clicked = _sidebar(conn)
+    config_path, inventory_path, inv_upload, run_clicked = _sidebar(conn)
 
     # Persistent logs (from last run in this session)
     if st.session_state.get("last_run_output") or st.session_state.get("last_run_error"):
@@ -270,11 +281,20 @@ def main() -> None:
         since = _last_run_date(conn) or FIRST_RUN_SINCE
         conn.close()   # close before long subprocess
         try:
+            inv_path_to_use = inventory_path
+            if not inv_path_to_use:
+                if inv_upload is None:
+                    raise RuntimeError("Please upload the inventory file (.xlsx or .csv) in the sidebar.")
+                suffix = ".csv" if (inv_upload.name or "").lower().endswith(".csv") else ".xlsx"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(inv_upload.getbuffer())
+                    inv_path_to_use = tmp.name
+
             with st.spinner(
                 f"Running pipeline… picking up 'Done' campaigns created on/after **{since}**. "
                 "This takes a few minutes."
             ):
-                output = run_pipeline(Path(config_path), Path(inventory_path), since)
+                output = run_pipeline(Path(config_path), Path(inv_path_to_use), since)
             st.session_state["last_run_output"] = output or ""
             st.session_state["last_run_error"] = ""
             st.success("Pipeline completed successfully.")
